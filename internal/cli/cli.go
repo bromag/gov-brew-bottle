@@ -17,6 +17,10 @@ type Config struct {
 	NexusPrefix string
 
 	UploadJSON bool
+
+	BuildBottle bool
+	Upload      bool
+	KeepWork    bool
 }
 
 type multiString []string
@@ -43,6 +47,10 @@ func ParseFlags(args []string) (Config, error) {
 	nPass := fs.String("nexus-pass", "", "nexus password")
 	nPrefix := fs.String("nexus-prefix", "", "nexus prefix")
 
+	buildBottle := fs.Bool("build-bottle", false, "build bottle (install --build-bottle + bottle)")
+	upload := fs.Bool("upload", false, "upload bottle (install --upload bottle)")
+	keepWork := fs.Bool("keep-work", false, "keep work dir")
+
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -57,6 +65,9 @@ func ParseFlags(args []string) (Config, error) {
 		NexusPass:   *nPass,
 		NexusPrefix: *nPrefix,
 		UploadJSON:  *uploadJSON,
+		BuildBottle: *buildBottle,
+		Upload:      *upload,
+		KeepWork:    *keepWork,
 	}
 
 	if len(cfg.Refs) == 0 {

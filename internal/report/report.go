@@ -21,4 +21,6 @@ type BottleReport struct {
 
 	Status Status `json:"status"`
 	Error  string `json:"error,omitempty"`
+
+	Sha256 string `json:"sha256,omitempty"`
 }
