@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func FindBottleTarGZ(dir string) (string, error) {
+func FindBottleTarGz(dir string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.bottle.tar.gz"))
 	if err != nil {
 		return "", fmt.Errorf("glob: %w", err)
