@@ -1,0 +1,11 @@
+{
+  "ref": "tlchmi/ch-gov-brew/gov-srt",
+  "formula": "gov-srt",
+  "version": "1.5.4",
+  "tag": "arm64_tahoe",
+  "bottle_file": "gov-srt-1.5.4.arm64_tahoe.bottle.tar.gz",
+  "json_file": "gov-srt-1.5.4.arm64_tahoe.bottle.json",
+  "nexus_url_bottle": "http://localhost:8081/repository/gov-brew-bottle/gov-srt-1.5.4.arm64_tahoe.bottle.tar.gz",
+  "nexus_url_json": "http://localhost:8081/repository/gov-brew-bottle/gov-srt-1.5.4.arm64_tahoe.bottle.json",
+  "status": "planned"
+}
