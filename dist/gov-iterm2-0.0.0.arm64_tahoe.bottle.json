@@ -1,0 +1,11 @@
+{
+  "ref": "tlchmi/ch-gov-brew/gov-iterm2",
+  "formula": "gov-iterm2",
+  "version": "0.0.0",
+  "tag": "arm64_tahoe",
+  "bottle_file": "gov-iterm2-0.0.0.arm64_tahoe.bottle.tar.gz",
+  "json_file": "gov-iterm2-0.0.0.arm64_tahoe.bottle.json",
+  "nexus_url_bottle": "http://localhost:8081/repository/gov-brew-bottle/bottles/gov-iterm2/0.0.0/gov-iterm2-0.0.0.arm64_tahoe.bottle.tar.gz",
+  "nexus_url_json": "http://localhost:8081/repository/gov-brew-bottle/bottles/gov-iterm2/0.0.0/gov-iterm2-0.0.0.arm64_tahoe.bottle.json",
+  "status": "planned"
+}
