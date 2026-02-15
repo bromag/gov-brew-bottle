@@ -107,9 +107,18 @@ func main() {
 
 			brewBin := "gov-brew" // momentan hart: später wird es aus envCfg gelesen
 			_, stderr, code, err := brew.Run(context.Background(), brewBin,
-				[]string{"install", "--build-bottle", ref},
+				[]string{"uninstall", "--ignore-dependencies", ref},
 				"", nil,
 			)
+			if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "error: build-bottle failed:", err)
+				_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
+				_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
+			}
+			// install --build-bottle (Fehler = abbrechen)
+			_, stderr, code, err = brew.Run(context.Background(), brewBin,
+				[]string{"install", "--build-bottle", ref},
+				workDir, nil)
 			if err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, "error: build-bottle failed:", err)
 				_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
@@ -166,13 +175,36 @@ func main() {
 			os.Exit(1)
 		}
 
-		if cliCfg.UploadJSON {
+		if cliCfg.Upload {
 			if envCfg.NexusUser == "" || envCfg.NexusPass == "" {
-				_, _ = fmt.Fprintln(os.Stderr, "error: Nexus user, Nexus pass or Nexus password is empty")
+				_, _ = fmt.Fprintln(os.Stderr, "error: Nexus user or Nexus pass is empty")
 				os.Exit(2)
 			}
+			if bottleOutPath == "" {
+				_, _ = fmt.Fprintln(os.Stderr, "error: --upload requires --build-bottle (no bottle file produced)")
+				os.Exit(2)
+			}
+			// DEBUG (vor dem Upload!)
+			//fmt.Println("debug nexus user:", envCfg.NexusUser)
+			//fmt.Println("debug nexus pass_len:", len(envCfg.NexusPass))
+			//fmt.Println("debug upload bottle url:", rep.NexusURLBottle)
+			//fmt.Println("debug upload json url:", rep.NexusURLJSON)
 
 			up := nexus.Uploader{}
+
+			// 1) Upload bottle first
+			if err := up.PutFile(
+				context.Background(),
+				rep.NexusURLBottle,
+				bottleOutPath,
+				envCfg.NexusUser,
+				envCfg.NexusPass,
+			); err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "error: upload bottle:", err)
+				os.Exit(1)
+			}
+
+			// 2) Upload json second
 			if err := up.PutFile(
 				context.Background(),
 				rep.NexusURLJSON,
@@ -180,11 +212,12 @@ func main() {
 				envCfg.NexusUser,
 				envCfg.NexusPass,
 			); err != nil {
-				fmt.Fprintln(os.Stderr, "error: upload nexus:", err)
+				_, _ = fmt.Fprintln(os.Stderr, "error: upload json:", err)
 				os.Exit(1)
 			}
 
-			fmt.Println("upload json to: ", rep.NexusURLJSON)
+			fmt.Println("upload bottle to:", rep.NexusURLBottle)
+			fmt.Println("upload json to:", rep.NexusURLJSON)
 		}
 
 		fmt.Printf("tag=%s\nworkdir=%s\nnexus=%s\n", finalTag, finalWorkdir, finalNexusBase)
