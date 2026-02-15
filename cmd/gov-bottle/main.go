@@ -19,6 +19,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	// 1) Load .env (if present)
 	config.LoadEnv()
 
@@ -29,9 +33,8 @@ func main() {
 	cliCfg, err := cli.ParseFlags(os.Args[1:])
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
+		return 2
 	}
-
 	// 4) Merge (flags override env)
 	finalTag := firstNonEmpty(cliCfg.Tag, envCfg.DefaultTag)
 	finalWorkdir := firstNonEmpty(cliCfg.WorkDir, envCfg.DefaultWorkdir)
@@ -42,11 +45,11 @@ func main() {
 	// 5) Validate the merged config (for dry-run we only need tag/workdir)
 	if finalTag == "" {
 		fmt.Fprintln(os.Stderr, "error: missing tag. Set --tag or DEFAULT_TAG in .env")
-		os.Exit(2)
+		return 2
 	}
 	if finalWorkdir == "" {
 		_, _ = fmt.Fprintln(os.Stderr, "error: missing workdir. Set --workdir or DEFAULT_WORKDIR in .env")
-		os.Exit(2)
+		return 2
 	}
 
 	// ---- DRY-RUN MVP: create friend-style JSON report in ./dist ----
@@ -54,8 +57,10 @@ func main() {
 		ref := cliCfg.Refs[0]
 		short := path.Base(ref)
 
+		ctx := context.Background()
+
 		bc := brew.Client{BrewPath: envCfg.BrewBin}
-		version, verr := bc.FormulaVersion(context.Background(), ref)
+		version, verr := bc.FormulaVersion(ctx, ref)
 		if verr != nil {
 			version = "unknown"
 		}
@@ -65,7 +70,7 @@ func main() {
 
 		if err := os.MkdirAll(finalWorkdir, 0o755); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "error: failed to create workdir:", err)
-			os.Exit(1)
+			return 1
 		}
 
 		rep := report.BottleReport{
@@ -97,7 +102,7 @@ func main() {
 			workDir, err := os.MkdirTemp(finalWorkdir, "work-")
 			if err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, "error: failed to create workdir:", err)
-				os.Exit(1)
+				return 1
 			}
 			if !cliCfg.KeepWork {
 				defer os.RemoveAll(workDir)
@@ -123,7 +128,7 @@ func main() {
 				_, _ = fmt.Fprintln(os.Stderr, "error: build-bottle failed:", err)
 				_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
 				_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
-				os.Exit(1)
+				return 1
 			}
 
 			// Create bottle in the temp workdir
@@ -135,27 +140,27 @@ func main() {
 				_, _ = fmt.Fprintln(os.Stderr, "error: brew bottle failed:", err)
 				_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
 				_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
-				os.Exit(1)
+				return 1
 			}
 
 			// find generated bottle tar.gz
 			produced, err := fsutil.FindBottleTarGz(workDir)
 			if err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, "error: failed to find bottle:", err)
-				os.Exit(1)
+				return 1
 			}
 			// Move/rename to freind format into finalWorkdir
 			bottleOutPath = filepath.Join(finalWorkdir, bottleName)
 			if err := os.Rename(produced, bottleOutPath); err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, "error: move bottle:", err)
-				os.Exit(1)
+				return 1
 			}
 
 			// Compute sha256 for json
 			sum, err := hash.FileSHA256(bottleOutPath)
 			if err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, "error: sha256:", err)
-				os.Exit(1)
+				return 1
 			}
 			rep.Sha256 = sum
 		}
@@ -164,7 +169,7 @@ func main() {
 		f, err := os.Create(outPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error: create json:", err)
-			os.Exit(1)
+			return 1
 		}
 		defer f.Close()
 
@@ -172,17 +177,17 @@ func main() {
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(rep); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "error: write json:", err)
-			os.Exit(1)
+			return 1
 		}
 
 		if cliCfg.Upload {
 			if envCfg.NexusUser == "" || envCfg.NexusPass == "" {
 				_, _ = fmt.Fprintln(os.Stderr, "error: Nexus user or Nexus pass is empty")
-				os.Exit(2)
+				return 2
 			}
 			if bottleOutPath == "" {
 				_, _ = fmt.Fprintln(os.Stderr, "error: --upload requires --build-bottle (no bottle file produced)")
-				os.Exit(2)
+				return 2
 			}
 			// DEBUG (vor dem Upload!)
 			//fmt.Println("debug nexus user:", envCfg.NexusUser)
@@ -190,30 +195,32 @@ func main() {
 			//fmt.Println("debug upload bottle url:", rep.NexusURLBottle)
 			//fmt.Println("debug upload json url:", rep.NexusURLJSON)
 
+			ctx := context.Background()
+
 			up := nexus.Uploader{}
 
 			// 1) Upload bottle first
 			if err := up.PutFile(
-				context.Background(),
+				ctx,
 				rep.NexusURLBottle,
 				bottleOutPath,
 				envCfg.NexusUser,
 				envCfg.NexusPass,
 			); err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, "error: upload bottle:", err)
-				os.Exit(1)
+				return 1
 			}
 
 			// 2) Upload json second
 			if err := up.PutFile(
-				context.Background(),
+				ctx,
 				rep.NexusURLJSON,
 				outPath,
 				envCfg.NexusUser,
 				envCfg.NexusPass,
 			); err != nil {
 				_, _ = fmt.Fprintln(os.Stderr, "error: upload json:", err)
-				os.Exit(1)
+				return 1
 			}
 
 			fmt.Println("upload bottle to:", rep.NexusURLBottle)
@@ -222,13 +229,13 @@ func main() {
 
 		fmt.Printf("tag=%s\nworkdir=%s\nnexus=%s\n", finalTag, finalWorkdir, finalNexusBase)
 		fmt.Println("wrote:", outPath)
-		return
+		return 0
 	}
 
 	// Non-dry-run not implemented yet
 	fmt.Printf("tag=%s\nworkdir=%s\nnexus=%s\n", finalTag, finalWorkdir, finalNexusBase)
 	_, _ = fmt.Fprintln(os.Stderr, "non-dry-run not implemented yet")
-	os.Exit(3)
+	return 3
 }
 
 func firstNonEmpty(a, b string) string {
