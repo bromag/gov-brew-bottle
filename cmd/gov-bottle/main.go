@@ -5,17 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"gov-brew-bottle-creation/internal/brew"
+	"gov-brew-bottle-creation/internal/report"
 	"os"
-	"path"
+	//"path"
 	"path/filepath"
 
 	"gov-brew-bottle-creation/internal/cli"
 	"gov-brew-bottle-creation/internal/config"
 	"gov-brew-bottle-creation/internal/fsutil"
 	"gov-brew-bottle-creation/internal/hash"
-	"gov-brew-bottle-creation/internal/naming"
+	//"gov-brew-bottle-creation/internal/naming"
 	"gov-brew-bottle-creation/internal/nexus"
-	"gov-brew-bottle-creation/internal/report"
+	"gov-brew-bottle-creation/internal/plan"
+	//"gov-brew-bottle-creation/internal/report"
 )
 
 func main() {
@@ -35,140 +37,99 @@ func run() int {
 		_, _ = fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
+
 	// 4) Merge (flags override env)
 	finalTag := firstNonEmpty(cliCfg.Tag, envCfg.DefaultTag)
 	finalWorkdir := firstNonEmpty(cliCfg.WorkDir, envCfg.DefaultWorkdir)
-
 	finalNexusBase := firstNonEmpty(cliCfg.NexusBase, envCfg.NexusBaseURL)
-	//finalNexusPrefix := firstNonEmpty(cliCfg.NexusPrefix, envCfg.NexusPrefix)
 
-	// 5) Validate the merged config (for dry-run we only need tag/workdir)
+	// 5) Validate
 	if finalTag == "" {
-		fmt.Fprintln(os.Stderr, "error: missing tag. Set --tag or DEFAULT_TAG in .env")
+		_, _ = fmt.Fprintln(os.Stderr, "error: missing tag. Set --tag or DEFAULT_TAG in .env")
 		return 2
 	}
 	if finalWorkdir == "" {
 		_, _ = fmt.Fprintln(os.Stderr, "error: missing workdir. Set --workdir or DEFAULT_WORKDIR in .env")
 		return 2
 	}
+	if finalNexusBase == "" {
+		_, _ = fmt.Fprintln(os.Stderr, "error: missing nexus base. Set --nexus-base in .env")
+		return 2
+	}
 
-	// ---- DRY-RUN MVP: create friend-style JSON report in ./dist ----
-	if cliCfg.DryRun {
-		ref := cliCfg.Refs[0]
-		short := path.Base(ref)
+	// Workdir sicherstellen (immer)
+	if err := os.MkdirAll(finalWorkdir, 0o755); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "error: failed to create workdir:", err)
+		return 1
+	}
+	ctx := context.Background()
 
-		ctx := context.Background()
-
-		bc := brew.Client{BrewPath: envCfg.BrewBin}
-		version, verr := bc.FormulaVersion(ctx, ref)
-		if verr != nil {
-			version = "unknown"
+	// --nexus-upload
+	if cliCfg.NexusUpload {
+		if envCfg.NexusUser == "" || envCfg.NexusPass == "" {
+			_, _ = fmt.Fprintln(os.Stderr, "error: must specify NEXUS_USER and NEXUS_PASS")
+			return 2
 		}
 
-		bottleName := naming.BottleTarGz(short, version, finalTag)
-		jsonName := naming.BottleJSON(short, version, finalTag)
+		// 1) find newest bottle in finalWorkdir
+		bottlePath, err := fsutil.FindBottleTarGz(finalWorkdir)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: failed to find bottle in workdir:", err)
+			return 1
+		}
+		bottleFile := filepath.Base(bottlePath)
 
-		if err := os.MkdirAll(finalWorkdir, 0o755); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, "error: failed to create workdir:", err)
+		// 2) derive json filename from bottle filename
+		const suffix = ".bottle.tar.gz"
+		if len(bottleFile) <= len(suffix) || bottleFile[len(bottleFile)-len(suffix):] != suffix {
+			_, _ = fmt.Fprintln(os.Stderr, "error: bottle filename does not end with .bottle.tar.gz:", bottleFile)
+			return 1
+		}
+		jsonFile := bottleFile[:len(bottleFile)-len(suffix)] + ".bottle.json"
+		jsonPath := filepath.Join(finalWorkdir, jsonFile)
+
+		// 3) json must exist
+		if _, err := os.Stat(jsonPath); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: bottle json file not found:", jsonPath)
 			return 1
 		}
 
-		rep := report.BottleReport{
-			Ref:     ref,
-			Formula: short,
-			Version: version,
-			Tag:     finalTag,
+		up := nexus.Uploader{}
 
-			BottleFile: bottleName,
-			JSONFile:   jsonName,
+		// 4) URLs must use filenames (not local paths)
+		bottleURL := joinURL(finalNexusBase, bottleFile)
+		jsonURL := joinURL(finalNexusBase, jsonFile)
 
-			NexusURLBottle: joinURL(finalNexusBase, bottleName),
-			NexusURLJSON:   joinURL(finalNexusBase, jsonName),
-
-			//NexusURLBottle: joinURL(finalNexusBase, finalNexusPrefix, short, version, bottleName),
-			//NexusURLJSON:   joinURL(finalNexusBase, finalNexusPrefix, short, version, jsonName),
-
-			Status: report.StatusPlanned,
+		// 5) Upload
+		if err := up.PutFile(ctx, bottleURL, bottlePath, envCfg.NexusUser, envCfg.NexusPass); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: upload bottle:", err)
+			return 1
+		}
+		if err := up.PutFile(ctx, jsonURL, jsonPath, envCfg.NexusUser, envCfg.NexusPass); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: upload json:", err)
+			return 1
 		}
 
-		if verr != nil {
-			rep.Status = report.StatusFailed
-			rep.Error = verr.Error()
-		}
+		fmt.Println("upload bottle to:", bottleURL)
+		fmt.Println("upload bottle json to:", jsonURL)
+		return 0
+	}
 
-		// Optional: build bottle
-		var bottleOutPath string
-		if cliCfg.BuildBottle {
-			workDir, err := os.MkdirTemp(finalWorkdir, "work-")
-			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: failed to create workdir:", err)
-				return 1
-			}
-			if !cliCfg.KeepWork {
-				defer os.RemoveAll(workDir)
-			} else {
-				fmt.Println("keeping workdir:", workDir)
-			}
+	// Ab hier: kein "MVP-Dry-Run-Block" mehr. Der Flow gilt immer.
+	ref := cliCfg.Refs[0]
 
-			brewBin := "gov-brew" // momentan hart: später wird es aus envCfg gelesen
-			_, stderr, code, err := brew.Run(context.Background(), brewBin,
-				[]string{"uninstall", "--ignore-dependencies", ref},
-				"", nil,
-			)
-			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: build-bottle failed:", err)
-				_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
-				_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
-			}
-			// install --build-bottle (Fehler = abbrechen)
-			_, stderr, code, err = brew.Run(context.Background(), brewBin,
-				[]string{"install", "--build-bottle", ref},
-				workDir, nil)
-			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: build-bottle failed:", err)
-				_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
-				_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
-				return 1
-			}
+	// 6) Plan erstellen (immer)
+	pl := plan.Plan(ctx, envCfg.BrewBin, ref, finalTag, finalNexusBase, joinURL)
+	rep := pl.Report
+	bottleName := pl.BottleName
+	jsonName := pl.JSONName
 
-			// Create bottle in the temp workdir
-			_, stderr, code, err = brew.Run(context.Background(), brewBin,
-				[]string{"bottle", "--no-rebuild", ref},
-				workDir, nil,
-			)
-			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: brew bottle failed:", err)
-				_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
-				_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
-				return 1
-			}
-
-			// find generated bottle tar.gz
-			produced, err := fsutil.FindBottleTarGz(workDir)
-			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: failed to find bottle:", err)
-				return 1
-			}
-			// Move/rename to freind format into finalWorkdir
-			bottleOutPath = filepath.Join(finalWorkdir, bottleName)
-			if err := os.Rename(produced, bottleOutPath); err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: move bottle:", err)
-				return 1
-			}
-
-			// Compute sha256 for json
-			sum, err := hash.FileSHA256(bottleOutPath)
-			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: sha256:", err)
-				return 1
-			}
-			rep.Sha256 = sum
-		}
-
-		outPath := filepath.Join(finalWorkdir, jsonName)
-		f, err := os.Create(outPath)
+	// 8) Report immer schreiben (immer)
+	outPath := filepath.Join(finalWorkdir, jsonName)
+	writeReport := func() int {
+		f, err := os.Create(outPath) // overwrite
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error: create json:", err)
+			_, _ = fmt.Fprintln(os.Stderr, "error: create json:", err)
 			return 1
 		}
 		defer f.Close()
@@ -179,63 +140,143 @@ func run() int {
 			_, _ = fmt.Fprintln(os.Stderr, "error: write json:", err)
 			return 1
 		}
+		return 0
+	}
 
-		if cliCfg.Upload {
-			if envCfg.NexusUser == "" || envCfg.NexusPass == "" {
-				_, _ = fmt.Fprintln(os.Stderr, "error: Nexus user or Nexus pass is empty")
-				return 2
-			}
-			if bottleOutPath == "" {
-				_, _ = fmt.Fprintln(os.Stderr, "error: --upload requires --build-bottle (no bottle file produced)")
-				return 2
-			}
-			// DEBUG (vor dem Upload!)
-			//fmt.Println("debug nexus user:", envCfg.NexusUser)
-			//fmt.Println("debug nexus pass_len:", len(envCfg.NexusPass))
-			//fmt.Println("debug upload bottle url:", rep.NexusURLBottle)
-			//fmt.Println("debug upload json url:", rep.NexusURLJSON)
+	if rc := writeReport(); rc != 0 {
+		return rc
+	}
 
-			ctx := context.Background()
+	// 9) Wenn Plan schon failed: abbrechen (aber Report ist da)
+	if rep.Status == report.StatusFailed {
+		_, _ = fmt.Fprintln(os.Stderr, "error: plan failed:", rep.Error)
+		fmt.Println("wrote:", outPath)
+		return 1
+	}
 
-			up := nexus.Uploader{}
-
-			// 1) Upload bottle first
-			if err := up.PutFile(
-				ctx,
-				rep.NexusURLBottle,
-				bottleOutPath,
-				envCfg.NexusUser,
-				envCfg.NexusPass,
-			); err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: upload bottle:", err)
-				return 1
-			}
-
-			// 2) Upload json second
-			if err := up.PutFile(
-				ctx,
-				rep.NexusURLJSON,
-				outPath,
-				envCfg.NexusUser,
-				envCfg.NexusPass,
-			); err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "error: upload json:", err)
-				return 1
-			}
-
-			fmt.Println("upload bottle to:", rep.NexusURLBottle)
-			fmt.Println("upload json to:", rep.NexusURLJSON)
+	// 10) DRY-RUN: ab hier strikt keine Side-Effects
+	if cliCfg.DryRun {
+		if cliCfg.BuildBottle || cliCfg.Upload {
+			_, _ = fmt.Fprintln(os.Stderr, "note: --dry-run set, ignoring --build-bottle/--upload")
 		}
-
-		fmt.Printf("tag=%s\nworkdir=%s\nnexus=%s\n", finalTag, finalWorkdir, finalNexusBase)
 		fmt.Println("wrote:", outPath)
 		return 0
 	}
 
-	// Non-dry-run not implemented yet
-	fmt.Printf("tag=%s\nworkdir=%s\nnexus=%s\n", finalTag, finalWorkdir, finalNexusBase)
-	_, _ = fmt.Fprintln(os.Stderr, "non-dry-run not implemented yet")
-	return 3
+	// 11) Optional: build bottle (nur ohne dry-run)
+	var bottleOutPath string
+	if cliCfg.BuildBottle {
+		workDir, err := os.MkdirTemp(finalWorkdir, "work-")
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: failed to create temp workdir:", err)
+			return 1
+		}
+		if !cliCfg.KeepWork {
+			defer os.RemoveAll(workDir)
+		} else {
+			fmt.Println("keeping workdir:", workDir)
+		}
+
+		brewBin := envCfg.BrewBin
+
+		// uninstall (Fehler: nur loggen)
+		_, stderr, code, err := brew.Run(ctx, brewBin,
+			[]string{"uninstall", "--ignore-dependencies", ref},
+			"", nil,
+		)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "warn: uninstall failed:", err)
+			_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
+			_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
+		}
+
+		// install --build-bottle (Fehler: abbrechen)
+		_, stderr, code, err = brew.Run(ctx, brewBin,
+			[]string{"install", "--build-bottle", ref},
+			workDir, nil,
+		)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: build-bottle failed:", err)
+			_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
+			_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
+			return 1
+		}
+
+		// brew bottle
+		_, stderr, code, err = brew.Run(ctx, brewBin,
+			[]string{"bottle", "--no-rebuild", ref},
+			workDir, nil,
+		)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: brew bottle failed:", err)
+			_, _ = fmt.Fprintln(os.Stderr, "stderr:", stderr)
+			_, _ = fmt.Fprintln(os.Stderr, "exit:", code)
+			return 1
+		}
+
+		produced, err := fsutil.FindBottleTarGz(workDir)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: failed to find bottle:", err)
+			return 1
+		}
+
+		bottleOutPath = filepath.Join(finalWorkdir, bottleName)
+		if err := os.Rename(produced, bottleOutPath); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: move bottle:", err)
+			return 1
+		}
+		fmt.Println("wrote:", bottleOutPath)
+
+		sum, err := hash.FileSHA256(bottleOutPath)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: sha256:", err)
+			return 1
+		}
+		rep.Sha256 = sum
+
+		// Report nach Build überschreiben
+		if rc := writeReport(); rc != 0 {
+			return rc
+		}
+	}
+
+	// 12) Optional: upload (nur ohne dry-run)
+	if cliCfg.Upload {
+		if envCfg.NexusUser == "" || envCfg.NexusPass == "" {
+			_, _ = fmt.Fprintln(os.Stderr, "error: Nexus user or Nexus pass is empty")
+			return 2
+		}
+
+		// wenn bottleOutPath leer ist, nimm existing aus workdir
+		// (für jetzt: weiterhin require build oder stat() checks)
+
+		if bottleOutPath == "" {
+			bottleOutPath = filepath.Join(finalWorkdir, bottleName)
+		}
+
+		up := nexus.Uploader{}
+
+		if err := up.PutFile(ctx, rep.NexusURLBottle, bottleOutPath, envCfg.NexusUser, envCfg.NexusPass); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: upload bottle:", err)
+			return 1
+		}
+
+		if err := up.PutFile(ctx, rep.NexusURLJSON, outPath, envCfg.NexusUser, envCfg.NexusPass); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "error: upload json:", err)
+			return 1
+		}
+
+		fmt.Println("upload bottle to:", rep.NexusURLBottle)
+		fmt.Println("upload json to:", rep.NexusURLJSON)
+
+		// Report nach Upload nochmals überschreiben (optional)
+		if rc := writeReport(); rc != 0 {
+			return rc
+		}
+	}
+
+	fmt.Println("wrote:", outPath)
+	return 0
 }
 
 func firstNonEmpty(a, b string) string {

@@ -8,5 +8,5 @@
   "nexus_url_bottle": "http://localhost:8081/repository/gov-brew-bottle/gov-srt-1.5.4.arm64_tahoe.bottle.tar.gz",
   "nexus_url_json": "http://localhost:8081/repository/gov-brew-bottle/gov-srt-1.5.4.arm64_tahoe.bottle.json",
   "status": "planned",
-  "sha256": "74029436b7aad6ecd928586f59ce492ee2998ab4f4b13e681d86ff14776cf3ad"
+  "sha256": "f2ed05db22260855e7f78266a73165fcea8b8ace33ec368350416f79862321f8"
 }
