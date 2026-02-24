@@ -16,7 +16,9 @@ type Config struct {
 	DefaultTag     string
 	DefaultWorkdir string
 
-	BrewBin string
+	BrewBin        string
+	HomebrewPrefix string
+	TapWorkdir     string
 }
 
 func LoadEnv() {
@@ -32,6 +34,8 @@ func FromEnv() Config {
 		DefaultTag:     getenvDefault("DEFAULT_TAG", ""),
 		DefaultWorkdir: getenvDefault("DEFAULT_WORKDIR", "./dist"),
 		BrewBin:        getenvDefault("BREW_BIN", "brew"),
+		HomebrewPrefix: getenvDefault("HOMEBREW_PREFIX", "/opt/homebrew"),
+		TapWorkdir:     getenvDefault("TAP_WORKDIR", "./tap"),
 	}
 }
 
